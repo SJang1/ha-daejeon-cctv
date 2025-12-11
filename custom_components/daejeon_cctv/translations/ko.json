@@ -1,0 +1,19 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "대전 CCTV 추가",
+        "description": "utic.go.kr의 CCTV 스트림 URL을 입력하세요",
+        "data": {
+          "cctv_url": "CCTV URL"
+        }
+      }
+    },
+    "error": {
+      "unknown": "예기치 않은 오류가 발생했습니다"
+    },
+    "abort": {
+      "already_configured": "이 CCTV는 이미 설정되어 있습니다"
+    }
+  }
+}

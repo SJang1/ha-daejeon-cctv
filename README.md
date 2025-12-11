@@ -6,6 +6,8 @@ A custom Home Assistant integration to view Daejeon city CCTV streams from utic.
 
 Daejeon system uses unstable, .mp4 file to stream CCTV. it is hard to continusely show datas.
 
+## WARNING: UNSTABLE PROJECT!
+
 ## Features
 
 - 🎥 Stream CCTV feeds directly in Home Assistant

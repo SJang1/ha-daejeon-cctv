@@ -1,0 +1,19 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add Daejeon CCTV",
+        "description": "Enter the CCTV stream URL from utic.go.kr",
+        "data": {
+          "cctv_url": "CCTV URL"
+        }
+      }
+    },
+    "error": {
+      "unknown": "Unexpected error occurred"
+    },
+    "abort": {
+      "already_configured": "This CCTV is already configured"
+    }
+  }
+}
