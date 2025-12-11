@@ -334,19 +334,90 @@ class DaejeonCCTVHLSView(HomeAssistantView):
         if not hls_dir:
             return web.Response(status=503, text="HLS not initialized yet")
 
-        file_path = hls_dir / filename
+        # Determine which entry to serve from
+        # Priority: any ready entry (prefer active) > active entry (even if not ready)
+        serving_entry_id = None
         
-        # If file doesn't exist and it's the main playlist, return 202 (Accepted) to signal "not ready yet"
-        if not file_path.exists():
+        # Collect all ready entries
+        ready_entries = [
+            (eid, entry) for eid, entry in camera._hls_entries.items()
+            if entry["ready_time"] is not None
+        ]
+        
+        if ready_entries:
+            # Prefer active entry if it's ready
+            active_ready = [(eid, entry) for eid, entry in ready_entries if eid == camera._hls_active_entry_id]
+            if active_ready:
+                serving_entry_id = active_ready[0][0]
+                _LOGGER.debug("Serving active ready HLS entry %d", serving_entry_id)
+            else:
+                # Use newest ready entry
+                ready_entries.sort(key=lambda x: x[1]["ready_time"], reverse=True)
+                serving_entry_id = ready_entries[0][0]
+                _LOGGER.debug("Serving newest ready HLS entry %d", serving_entry_id)
+                
+                # Debug: show if there's a newer active entry building
+                if camera._hls_active_entry_id is not None and camera._hls_active_entry_id != serving_entry_id:
+                    active_entry = camera._hls_entries.get(camera._hls_active_entry_id)
+                    if active_entry:
+                        active_size = active_entry.get("fileSize", 0)
+                        active_process = active_entry.get("process")
+                        process_status = "running" if active_process and active_process.returncode is None else "dead"
+                        _LOGGER.debug("Newer entry %d is building (size=%d, not ready yet, process: %s)", 
+                                    camera._hls_active_entry_id, active_size, process_status)
+                        
+                        # If process is dead, log stderr
+                        if active_process and active_process.returncode is not None and active_process.stderr:
+                            try:
+                                stderr_data = await active_process.stderr.read()
+                                if stderr_data:
+                                    _LOGGER.error("Entry %d process died with stderr: %s", 
+                                                camera._hls_active_entry_id, stderr_data.decode())
+                            except:
+                                pass
+        else:
+            # No ready entries - fall back to active entry even if not ready
+            if camera._hls_active_entry_id is not None:
+                active_entry = camera._hls_entries.get(camera._hls_active_entry_id)
+                if active_entry:
+                    serving_entry_id = camera._hls_active_entry_id
+                    active_size = active_entry.get("fileSize", 0)
+                    _LOGGER.debug("Using building active entry %d (size=%d)", serving_entry_id, active_size)
+        
+        # Resolve file path based on serving entry
+        file_path = hls_dir / filename
+        playlist_filename = filename
+        
+        if serving_entry_id is not None:
+            entry = camera._hls_entries[serving_entry_id]
+            entry_dir = entry.get("entry_dir")
+            
+            # Handle requests without entry prefix - use serving entry's directory
             if filename == "index.m3u8":
-                _LOGGER.warning("HLS playlist not found yet, retrying... (hls_dir=%s)", hls_dir)
+                # Legacy index.m3u8 -> use entry's playlist
+                playlist_filename = entry["playlist"]
+                file_path = hls_dir / playlist_filename
+                _LOGGER.debug("Using playlist %s for entry %d", playlist_filename, serving_entry_id)
+            elif filename.endswith(".ts") and "/" not in filename:
+                # Segment without prefix -> use serving entry's directory
+                if entry_dir:
+                    file_path = entry_dir / filename
+                    _LOGGER.debug("Using segment %s from entry %d", filename, serving_entry_id)
+        
+        # If file doesn't exist, return appropriate error
+        if not file_path.exists():
+            # Check if it's a playlist or segment
+            is_playlist = filename.endswith(".m3u8") or playlist_filename.endswith(".m3u8")
+            if is_playlist:
+                _LOGGER.warning("HLS playlist %s not found yet, retrying... (hls_dir=%s)", playlist_filename, hls_dir)
                 return web.Response(status=202, text="HLS packaging in progress")
             else:
                 _LOGGER.debug("HLS segment not found: %s", file_path)
                 return web.Response(status=404, text="HLS segment not found")
 
         # For playlist file, verify it has valid content
-        if filename == "index.m3u8":
+        is_playlist = filename.endswith(".m3u8") or playlist_filename.endswith(".m3u8")
+        if is_playlist:
             try:
                 file_size = file_path.stat().st_size
                 if file_size == 0:
@@ -354,11 +425,31 @@ class DaejeonCCTVHLSView(HomeAssistantView):
                     return web.Response(status=202, text="HLS playlist empty; retrying")
                 async with aiofiles.open(file_path, 'r') as f:
                     content = await f.read()
-                if "#EXTINF" not in content:
+                has_extinf = "#EXTINF" in content
+                if not has_extinf:
                     _LOGGER.warning("HLS playlist missing segments; returning 202 to retry")
                     return web.Response(status=202, text="HLS playlist not ready; retrying")
                 first_line = content.splitlines()[0] if content else ""
-                _LOGGER.info("Serving HLS playlist %s: size=%d bytes, first_line=%s", filename, file_size, first_line)
+
+                # Update fileSize and ready_time for the entry being served (not just active)
+                if serving_entry_id is not None:
+                    entry = camera._hls_entries.get(serving_entry_id)
+                    if entry:
+                        # Always update fileSize for the served entry
+                        entry["fileSize"] = file_size
+                        if entry["ready_time"] is None and file_size > 1000:
+                            entry["ready_time"] = time.time()
+                            _LOGGER.info("HLS entry %d marked ready (size=%d)", serving_entry_id, file_size)
+                        elif entry["ready_time"] is None:
+                            _LOGGER.info("HLS entry %d not ready yet (size=%d, need >1000)", serving_entry_id, file_size)
+
+                # If we're serving a non-ready entry, return 202
+                if serving_entry_id is not None:
+                    entry = camera._hls_entries.get(serving_entry_id)
+                    if entry and entry["ready_time"] is None:
+                        return web.Response(status=202, text="HLS not ready yet (building up segments)")
+
+                _LOGGER.info("Serving HLS playlist %s: size=%d bytes, first_line=%s", playlist_filename, file_size, first_line)
             except Exception as e:
                 _LOGGER.error("Error reading HLS playlist %s: %s", file_path, e)
                 return web.Response(status=500, text=f"Error reading playlist: {e}")
@@ -399,8 +490,11 @@ class DaejeonCCTVCamera(Camera):
         self._last_access_time: float = 0
         self._idle_timeout = 60
         self._max_videos = 30  # Keep more videos to prevent deletion during streaming
-        self._hls_process: asyncio.subprocess.Process | None = None
         self._hls_current_video: Path | None = None
+        # HLS entries: id -> {"hls": path, "switch_time": time|None, "ready_time": time|None, "process": Process, ...}
+        self._hls_entries: dict[int, dict] = {}
+        self._hls_next_id = 1
+        self._hls_active_entry_id: int | None = None  # Track which entry is currently being written to
         self._hls_source_url: str | None = None  # Track source URL for HLS to detect changes
         # Cache camera_id to avoid repeated hash computation
         import hashlib
@@ -438,7 +532,7 @@ class DaejeonCCTVCamera(Camera):
         latest_video = self._get_latest_video_fresh()
         if not latest_video or latest_video.name not in self._video_ready_time:
             _LOGGER.debug("No ready video for snapshot")
-            return None
+            raise ValueError("No video ready for snapshot")
 
         # Reuse cached snapshot if same video and recent (2s)
         now = time.time()
@@ -486,10 +580,10 @@ class DaejeonCCTVCamera(Camera):
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
             if proc.returncode != 0:
                 _LOGGER.warning("Snapshot ffmpeg failed (code %s): %s", proc.returncode, stderr.decode(errors="ignore"))
-                return None
+                raise ValueError("Snapshot generation failed")
             if not stdout:
                 _LOGGER.warning("Snapshot ffmpeg produced no data")
-                return None
+                raise ValueError("Snapshot ffmpeg produced no data")
             # Cache snapshot
             self._snapshot_cache_video = latest_video
             self._snapshot_cache_bytes = stdout
@@ -497,7 +591,7 @@ class DaejeonCCTVCamera(Camera):
             return stdout
         except asyncio.TimeoutError:
             _LOGGER.warning("Snapshot ffmpeg timed out")
-            return None
+            raise ValueError("Snapshot generation timeout")
         except Exception as err:
             _LOGGER.error("Snapshot error: %s", err)
             return None
@@ -538,10 +632,6 @@ class DaejeonCCTVCamera(Camera):
             await self._start_hls_live(latest_video)
             self._hls_current_video = latest_video
             _LOGGER.debug("HLS repack started for %s", latest_video.name)
-
-        # Give ffmpeg a moment to create the initial playlist file
-        # (ffmpeg takes ~1-2s to start generating segments)
-        await asyncio.sleep(5.0)
 
         camera_id = self.get_camera_id()
         base_url = get_url(self._hass)
@@ -772,29 +862,56 @@ class DaejeonCCTVCamera(Camera):
         return self._video_dir / "hls"
 
     async def _stop_hls(self) -> None:
-        """Stop running HLS ffmpeg process."""
-        if self._hls_process:
-            try:
-                self._hls_process.terminate()
-                await self._hls_process.wait()
-            except Exception:
-                pass
-            self._hls_process = None
+        """Stop all running HLS ffmpeg processes."""
+        for hls_id, entry in list(self._hls_entries.items()):
+            process = entry.get("process")
+            if process:
+                try:
+                    process.terminate()
+                    await process.wait()
+                    _LOGGER.debug("Stopped HLS process for entry %d", hls_id)
+                except Exception as e:
+                    _LOGGER.debug("Error stopping HLS process %d: %s", hls_id, e)
+        self._hls_entries.clear()
 
-    async def _start_hls_live(self, video_path: Path) -> None:
-        """Start/replace a looping HLS packager for the given MP4 (omit ENDLIST)."""
+    async def _start_hls_live(self, video_path: Path) -> int:
+        """Start/replace a looping HLS packager for the given MP4 (omit ENDLIST).
+        
+        Returns the HLS entry ID.
+        """
         hls_dir = self._get_hls_dir()
         if not hls_dir:
-            return
+            return -1
         hls_dir.mkdir(parents=True, exist_ok=True)
 
-        # DON'T clean old segments - let segment numbers keep incrementing
-        # so HA doesn't think it's the same video looping
+        # Create entry for this HLS with process reference
+        hls_id = self._hls_next_id
+        self._hls_next_id += 1
+        
+        # Use unique subdirectory for this entry's files
+        entry_dir = hls_dir / f"entry{hls_id}"
+        entry_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Playlist file in entry subdirectory
+        playlist_filename = f"entry{hls_id}/index.m3u8"
+        
+        self._hls_entries[hls_id] = {
+            "hls": video_path,
+            "switch_time": None,
+            "ready_time": None,
+            "process": None,  # Will be set after process starts
+            "fileSize": 0,  # Track playlist size for readiness decisions
+            "playlist": playlist_filename,  # Track which playlist file this entry uses
+            "entry_dir": entry_dir,  # Track entry directory for cleanup
+        }
+        self._hls_active_entry_id = hls_id  # Mark this as the active entry
+        _LOGGER.info("Created HLS entry %d for %s (dir: entry%d)", hls_id, video_path.name, hls_id)
 
-        playlist_path = hls_dir / "index.m3u8"
-        segment_pattern = str(hls_dir / "segment_%03d.ts")
+        # Each entry starts segment numbering from 0 (isolated in its own directory)
+        start_number = 0
 
-        # DON'T stop old HLS here - let caller handle it for gapless transition
+        playlist_path = hls_dir / playlist_filename
+        segment_pattern = str(entry_dir / "segment_%03d.ts")
 
         cmd = [
             "ffmpeg",
@@ -817,9 +934,9 @@ class DaejeonCCTVCamera(Camera):
             "-hls_segment_type",
             "mpegts",
             "-hls_flags",
-            "delete_segments+omit_endlist+program_date_time",
+            "delete_segments+omit_endlist+program_date_time+discont_start",
             "-start_number",
-            "0",
+            str(start_number),
             "-hls_segment_filename",
             segment_pattern,
             "-f",
@@ -828,15 +945,149 @@ class DaejeonCCTVCamera(Camera):
         ]
 
         try:
-            self._hls_process = await asyncio.create_subprocess_exec(
+            process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _LOGGER.debug("HLS packager started for %s", self._attr_name)
+            # Only track process in the entry, not in self._hls_process (allows multiple concurrent processes)
+            self._hls_entries[hls_id]["process"] = process
+            _LOGGER.debug("HLS packager started for %s (entry %d, segment start: %d, pid: %s)", 
+                         self._attr_name, hls_id, start_number, process.pid)
+            
+            # Check if process is still running after a brief moment
+            await asyncio.sleep(0.1)
+            if process.returncode is not None:
+                stderr = await process.stderr.read() if process.stderr else b''
+                _LOGGER.error("HLS process %d died immediately: %s", hls_id, stderr.decode())
+                self._hls_entries.pop(hls_id, None)
+                return -1
         except Exception as err:
             _LOGGER.error("Error starting HLS for %s: %s", self._attr_name, err)
-            self._hls_process = None
+            self._hls_entries.pop(hls_id, None)
+            return -1
+        
+        return hls_id
+
+    async def _cleanup_old_hls_entries(self) -> None:
+        """Clean up old HLS entries that were switched away from (runs slowly)."""
+        cutoff_time = time.time() - 180  # Keep entries for 3 minutes after switch (increased from 2)
+        to_delete = []
+        
+        # Find ready entries to keep at least 2 as fallback (current + 1 previous)
+        ready_entries = [
+            (hls_id, entry) for hls_id, entry in self._hls_entries.items()
+            if entry.get("ready_time") is not None
+        ]
+        ready_entries.sort(key=lambda x: x[1]["ready_time"], reverse=True)
+        keep_ready_ids = {ready_entries[i][0] for i in range(min(2, len(ready_entries)))}
+        
+        for hls_id, entry in self._hls_entries.items():
+            switch_time = entry.get("switch_time")
+            # Don't delete the latest 2 ready entries even if they're past cutoff
+            if hls_id in keep_ready_ids:
+                _LOGGER.debug("Keeping ready HLS entry %d as fallback", hls_id)
+                continue
+            if switch_time is not None and switch_time < cutoff_time:
+                to_delete.append(hls_id)
+        
+        for hls_id in to_delete:
+            entry = self._hls_entries[hls_id]
+            
+            # Delete the entire entry directory (playlist + segments)
+            entry_dir = entry.get("entry_dir")
+            if entry_dir and entry_dir.exists():
+                try:
+                    import shutil
+                    shutil.rmtree(entry_dir)
+                    _LOGGER.info("Deleted entry directory for HLS entry %d", hls_id)
+                except OSError as e:
+                    _LOGGER.debug("Error deleting entry directory %s: %s", entry_dir, e)
+            
+            del self._hls_entries[hls_id]
+            _LOGGER.info("Cleaned up old HLS entry %d", hls_id)
+        
+        # Clean up orphaned entry* directories not tracked in entries
+        hls_dir = self._get_hls_dir()
+        if hls_dir and hls_dir.exists():
+            tracked_dirs = {entry.get("entry_dir") for entry in self._hls_entries.values() if entry.get("entry_dir")}
+            try:
+                for entry_dir in hls_dir.glob("entry*"):
+                    if entry_dir.is_dir() and entry_dir not in tracked_dirs:
+                        try:
+                            import shutil
+                            shutil.rmtree(entry_dir)
+                            _LOGGER.info("Deleted orphaned entry directory %s", entry_dir.name)
+                        except OSError as e:
+                            _LOGGER.debug("Error deleting orphaned directory %s: %s", entry_dir.name, e)
+            except Exception as e:
+                _LOGGER.debug("Error cleaning up orphaned directories: %s", e)
+
+    def _cleanup_videos_not_in_hls(self) -> None:
+        """Delete videos that are not referenced by active/ready HLS entries or serving video.
+
+        Keeps newest videos and any that are currently being served or referenced by HLS entries.
+        """
+        if not self._video_dir:
+            return
+
+        keep_paths: set[Path] = set()
+        # Keep serving and current HLS source
+        if self._serving_video:
+            keep_paths.add(self._serving_video)
+        if self._hls_current_video:
+            keep_paths.add(self._hls_current_video)
+        # Keep any videos referenced by HLS entries
+        for entry in self._hls_entries.values():
+            hls_video = entry.get("hls")
+            if hls_video:
+                keep_paths.add(hls_video)
+
+        videos = sorted(self._video_dir.glob("video_*.mp4"), key=lambda p: p.stat().st_mtime)
+        # Keep newest self._max_videos regardless
+        to_consider = videos[:-self._max_videos] if len(videos) > self._max_videos else []
+
+        for video in to_consider:
+            if video in keep_paths:
+                continue
+            # Skip very recent downloads (<30s) to avoid deleting fresh files
+            if video.name in self._video_ready_time:
+                age = time.time() - self._video_ready_time[video.name]
+                if age < 30:
+                    continue
+            try:
+                video.unlink()
+                _LOGGER.info("Deleted old video not in HLS: %s", video.name)
+            except OSError:
+                pass
+
+    async def _wait_for_active_hls_ready(self, timeout: float = 20.0) -> bool:
+        """Wait until the active HLS playlist is ready (size > 1000 bytes and has segments)."""
+        hls_dir = self._get_hls_dir()
+        if not hls_dir:
+            return False
+        playlist_path = hls_dir / "index.m3u8"
+
+        start = time.time()
+        while time.time() - start < timeout:
+            if playlist_path.exists():
+                try:
+                    size = playlist_path.stat().st_size
+                    if size > 1000:
+                        async with aiofiles.open(playlist_path, "r") as f:
+                            content = await f.read()
+                        if "#EXTINF" in content:
+                            # Mark active entry as ready
+                            if self._hls_active_entry_id is not None and self._hls_active_entry_id in self._hls_entries:
+                                entry = self._hls_entries[self._hls_active_entry_id]
+                                if entry["ready_time"] is None:
+                                    entry["ready_time"] = time.time()
+                                    _LOGGER.info("HLS entry %d marked ready in wait (size=%d)", self._hls_active_entry_id, size)
+                            return True
+                except Exception as err:
+                    _LOGGER.debug("Error checking playlist readiness: %s", err)
+            await asyncio.sleep(0.5)
+        return False
 
     async def _ensure_hls_ready(self, video_path: Path, wait_seconds: float = 2.0) -> bool:
         """Ensure HLS playlist is usable (has segments) for the given video.
@@ -852,19 +1103,11 @@ class DaejeonCCTVCamera(Camera):
 
         # Start packager if not already on this video
         if self._hls_current_video is None or self._hls_current_video != video_path:
-            # Start new HLS (old one keeps running if exists)
-            old_process = self._hls_process
+            # Start new HLS (old processes keep running)
             await self._start_hls_live(video_path)
             self._hls_current_video = video_path
             # Wait for new HLS to initialize
             await asyncio.sleep(1.0)
-            # Stop old process after new one is running
-            if old_process:
-                try:
-                    old_process.terminate()
-                    await asyncio.wait_for(old_process.wait(), timeout=1.0)
-                except Exception:
-                    pass
 
         # Wait for playlist to become valid
         start_time = time.time()
@@ -904,7 +1147,8 @@ class DaejeonCCTVCamera(Camera):
     async def _download_loop(self) -> None:
         """Continuously download videos every 10 seconds while being viewed."""
         last_url_fetch = 0
-        fetch_interval_success = 15
+        last_video_url = None
+        fetch_interval_success = 30
         fetch_interval_fail = 3
         current_interval = fetch_interval_success
         try:
@@ -926,43 +1170,73 @@ class DaejeonCCTVCamera(Camera):
                         else:
                             current_interval = fetch_interval_fail
                             _LOGGER.warning("No video source found; retrying in %ds", current_interval)
-                            # Don't restart HLS; let it keep looping current video
                         last_url_fetch = current_time
                     
-                    # Download and save
+                    # Download and save only if URL changed or no video exists yet
+                    should_download = False
                     if self._video_url:
+                        if self._video_url != last_video_url:
+                            _LOGGER.info("New video URL detected: %s", self._video_url)
+                            should_download = True
+                        elif self._hls_current_video is None:
+                            _LOGGER.info("Initial download for HLS setup")
+                            should_download = True
+                    
+                    if should_download:
                         download_success = await self._download_and_save_video()
                         if download_success:
-                            # Always switch to latest video to keep stream fresh
+                            last_video_url = self._video_url
+                            # Start new HLS immediately (will mark ready_time when playlist is valid)
                             latest = self._get_latest_video_fresh()
                             if latest and latest.name in self._video_ready_time:
                                 if self._hls_current_video is None or self._hls_current_video != latest:
-                                    _LOGGER.info("Switching HLS to fresh video: %s", latest.name)
-                                    # Start new HLS process (old one keeps running)
-                                    old_process = self._hls_process
-                                    await self._start_hls_live(latest)
-                                    # Wait for new HLS to build up segments (at least 5 segments = ~20s of video)
-                                    hls_dir = self._get_hls_dir()
-                                    if hls_dir:
-                                        playlist_path = hls_dir / "index.m3u8"
-                                        wait_start = time.time()
-                                        while time.time() - wait_start < 10.0:
-                                            if playlist_path.exists() and playlist_path.stat().st_size > 400:
-                                                # Playlist has enough content, safe to switch
-                                                break
-                                            await asyncio.sleep(0.5)
-                                    # Stop old process now that new one is running
-                                    if old_process:
-                                        try:
-                                            old_process.terminate()
-                                            await asyncio.wait_for(old_process.wait(), timeout=1.0)
-                                        except Exception:
-                                            pass
+                                    _LOGGER.info("Starting HLS for new video: %s", latest.name)
+                                    hls_id = await self._start_hls_live(latest)
                                     self._hls_current_video = latest
                                     self._serving_video = latest
                     
-                    # Wait before next iteration; on failure retry sooner
-                    sleep_time = 10 if current_interval == fetch_interval_success else fetch_interval_fail
+                    # Check if latest HLS entry is ready - if so, mark old entries as switched
+                    if self._hls_entries:
+                        latest_id = max(self._hls_entries.keys())
+                        latest_entry = self._hls_entries[latest_id]
+                        
+                        # Always update fileSize for the active entry (shows live growth)
+                        hls_dir = self._get_hls_dir()
+                        if hls_dir:
+                            playlist_filename = latest_entry.get("playlist")
+                            if playlist_filename:
+                                playlist_path = hls_dir / playlist_filename
+                                if playlist_path.exists():
+                                    file_size = playlist_path.stat().st_size
+                                    latest_entry["fileSize"] = file_size
+                                    
+                                    # Mark as ready when size > 1000 and has valid content
+                                    if latest_entry["ready_time"] is None and file_size > 1000:
+                                        try:
+                                            async with aiofiles.open(playlist_path, 'r') as f:
+                                                content = await f.read()
+                                            if "#EXTINF" in content:
+                                                latest_entry["ready_time"] = time.time()
+                                                _LOGGER.info("HLS entry %d marked ready in download loop (size=%d)", latest_id, file_size)
+                                        except Exception as e:
+                                            _LOGGER.debug("Error reading playlist in download loop: %s", e)
+                        
+                        # Switch if ready and not yet switched
+                        if latest_entry["ready_time"] is not None and latest_entry["switch_time"] is None:
+                            _LOGGER.info("HLS entry %d is ready, marking for active use", latest_id)
+                            # Mark old entries as switched (but don't kill processes - let them finish building)
+                            for old_id in self._hls_entries:
+                                if old_id != latest_id and self._hls_entries[old_id]["switch_time"] is None:
+                                    old_entry = self._hls_entries[old_id]
+                                    old_entry["switch_time"] = time.time()
+                                    _LOGGER.info("HLS entry %d switched away, letting process finish", old_id)
+                    
+                    # Periodically clean up old HLS entries and orphan videos
+                    await self._cleanup_old_hls_entries()
+                    self._cleanup_videos_not_in_hls()
+                    
+                    # Wait before next iteration
+                    sleep_time = 10
                     await asyncio.sleep(sleep_time)
                     
                 except asyncio.CancelledError:
