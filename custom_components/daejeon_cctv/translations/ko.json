@@ -5,15 +5,33 @@
         "title": "대전 CCTV 추가",
         "description": "utic.go.kr의 CCTV 스트림 URL을 입력하세요",
         "data": {
-          "cctv_url": "CCTV URL"
+          "cctv_url": "CCTV URL",
+          "cctv_name": "카메라 이름 (선택사항)",
+          "rtsp_port": "RTSP 포트",
+          "hls_segment_duration": "HLS 세그먼트 길이 (초)",
+          "max_segments": "최대 HLS 세그먼트 수"
         }
       }
     },
     "error": {
-      "unknown": "예기치 않은 오류가 발생했습니다"
+      "unknown": "예기치 않은 오류가 발생했습니다",
+      "cannot_connect": "CCTV URL에 연결할 수 없습니다",
+      "no_video": "URL에서 비디오 스트림을 찾을 수 없습니다"
     },
     "abort": {
       "already_configured": "이 CCTV는 이미 설정되어 있습니다"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "대전 CCTV 설정",
+        "data": {
+          "rtsp_port": "RTSP 포트",
+          "hls_segment_duration": "HLS 세그먼트 길이 (초)",
+          "max_segments": "최대 HLS 세그먼트 수"
+        }
+      }
     }
   }
 }

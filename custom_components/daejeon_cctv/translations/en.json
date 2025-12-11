@@ -5,15 +5,33 @@
         "title": "Add Daejeon CCTV",
         "description": "Enter the CCTV stream URL from utic.go.kr",
         "data": {
-          "cctv_url": "CCTV URL"
+          "cctv_url": "CCTV URL",
+          "cctv_name": "Camera Name (optional)",
+          "rtsp_port": "RTSP Port",
+          "hls_segment_duration": "HLS Segment Duration (seconds)",
+          "max_segments": "Max HLS Segments"
         }
       }
     },
     "error": {
-      "unknown": "Unexpected error occurred"
+      "unknown": "Unexpected error occurred",
+      "cannot_connect": "Failed to connect to CCTV URL",
+      "no_video": "No video stream found at URL"
     },
     "abort": {
       "already_configured": "This CCTV is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure Daejeon CCTV",
+        "data": {
+          "rtsp_port": "RTSP Port",
+          "hls_segment_duration": "HLS Segment Duration (seconds)",
+          "max_segments": "Max HLS Segments"
+        }
+      }
     }
   }
 }
