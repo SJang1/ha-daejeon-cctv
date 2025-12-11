@@ -597,6 +597,12 @@ class DaejeonCCTVCamera(Camera):
     async def async_added_to_hass(self) -> None:
         """Called when entity is added to hass."""
         await super().async_added_to_hass()
+        # Delay start to avoid blocking HA startup
+        # Download will start when stream is first accessed or after delay
+        self._hass.loop.call_later(5, self._delayed_start)
+    
+    def _delayed_start(self) -> None:
+        """Start download task after delay (called by loop.call_later)."""
         self._last_access_time = time.time()
         self._start_download_task()
     
