@@ -7,7 +7,6 @@
         "data": {
           "cctv_url": "CCTV URL",
           "cctv_name": "카메라 이름 (선택사항)",
-          "rtsp_port": "RTSP 포트",
           "hls_segment_duration": "HLS 세그먼트 길이 (초)",
           "max_segments": "최대 HLS 세그먼트 수"
         }
@@ -27,7 +26,6 @@
       "init": {
         "title": "대전 CCTV 설정",
         "data": {
-          "rtsp_port": "RTSP 포트",
           "hls_segment_duration": "HLS 세그먼트 길이 (초)",
           "max_segments": "최대 HLS 세그먼트 수"
         }

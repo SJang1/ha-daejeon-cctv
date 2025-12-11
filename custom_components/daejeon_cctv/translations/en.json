@@ -7,7 +7,6 @@
         "data": {
           "cctv_url": "CCTV URL",
           "cctv_name": "Camera Name (optional)",
-          "rtsp_port": "RTSP Port",
           "hls_segment_duration": "HLS Segment Duration (seconds)",
           "max_segments": "Max HLS Segments"
         }
@@ -27,7 +26,6 @@
       "init": {
         "title": "Configure Daejeon CCTV",
         "data": {
-          "rtsp_port": "RTSP Port",
           "hls_segment_duration": "HLS Segment Duration (seconds)",
           "max_segments": "Max HLS Segments"
         }

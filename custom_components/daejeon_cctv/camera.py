@@ -336,6 +336,9 @@ class HLSPlaylistView(HomeAssistantView):
         # Update access time
         camera.update_access_time()
         
+        # Check if there's a newer video available and switch to it
+        await camera.switch_to_latest_if_needed()
+        
         hls_manager = camera.hls_manager
         if not hls_manager.is_ready:
             return web.Response(status=503, text="HLS stream not ready")
@@ -458,6 +461,24 @@ class DaejeonCCTVCamera(Camera):
         """Update the last access time and ensure download task is running."""
         self._last_access_time = time.time()
         self._start_download_task()
+    
+    async def switch_to_latest_if_needed(self) -> bool:
+        """Switch to latest video if a newer one is available.
+        
+        Called by HLS playlist view to check for updates.
+        Returns True if switched, False if no switch needed.
+        """
+        latest = self._get_latest_ready_video()
+        if not latest:
+            return False
+        
+        current = self._hls_manager.current_video
+        if current == latest:
+            return False
+        
+        # There's a newer video available, switch to it
+        _LOGGER.info("Switching to newer video: %s", latest.name)
+        return await self._hls_manager.start_or_switch(latest)
     
     @property
     def use_stream_for_stills(self) -> bool:

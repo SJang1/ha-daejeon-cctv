@@ -21,11 +21,9 @@ from .const import (
     CONF_CCTV_URL,
     CONF_HLS_SEGMENT_DURATION,
     CONF_MAX_SEGMENTS,
-    CONF_RTSP_PORT,
     DEFAULT_HLS_SEGMENT_DURATION,
     DEFAULT_MAX_SEGMENTS,
     DEFAULT_NAME,
-    DEFAULT_RTSP_PORT,
     DOMAIN,
 )
 
@@ -40,7 +38,6 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_CCTV_URL): cv.string,
         vol.Optional(CONF_CCTV_NAME): cv.string,
-        vol.Optional(CONF_RTSP_PORT, default=DEFAULT_RTSP_PORT): cv.port,
         vol.Optional(
             CONF_HLS_SEGMENT_DURATION, default=DEFAULT_HLS_SEGMENT_DURATION
         ): vol.All(vol.Coerce(int), vol.Range(min=2, max=10)),
@@ -116,40 +113,38 @@ class DaejeonCCTVConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: 
         if user_input is not None:
             cctv_url = user_input[CONF_CCTV_URL].strip()
             
-            # Validate URL
+            # Validate URL (but don't block on failure - server is unreliable)
             valid, error = await validate_cctv_url(cctv_url)
             
             if not valid:
-                if error == "no_video_found":
-                    errors["base"] = "no_video"
-                else:
-                    errors["base"] = "cannot_connect"
-                    _LOGGER.error("CCTV URL validation failed: %s", error)
-            else:
-                # Extract or use provided name
-                cctv_name = user_input.get(CONF_CCTV_NAME)
-                if not cctv_name:
-                    cctv_name = extract_cctv_name(cctv_url)
-                
-                # Generate unique ID
-                url_hash = hashlib.md5(cctv_url.encode()).hexdigest()[:8]
-                await self.async_set_unique_id(f"daejeon_cctv_{url_hash}")
-                self._abort_if_unique_id_configured()
-
-                return self.async_create_entry(
-                    title=cctv_name,
-                    data={
-                        CONF_CCTV_URL: cctv_url,
-                        CONF_CCTV_NAME: cctv_name,
-                        CONF_RTSP_PORT: user_input.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT),
-                        CONF_HLS_SEGMENT_DURATION: user_input.get(
-                            CONF_HLS_SEGMENT_DURATION, DEFAULT_HLS_SEGMENT_DURATION
-                        ),
-                        CONF_MAX_SEGMENTS: user_input.get(
-                            CONF_MAX_SEGMENTS, DEFAULT_MAX_SEGMENTS
-                        ),
-                    },
+                # Log warning but proceed anyway - server may be temporarily unavailable
+                _LOGGER.warning(
+                    "CCTV URL validation failed (%s), but proceeding anyway", error
                 )
+            
+            # Extract or use provided name
+            cctv_name = user_input.get(CONF_CCTV_NAME)
+            if not cctv_name:
+                cctv_name = extract_cctv_name(cctv_url)
+            
+            # Generate unique ID
+            url_hash = hashlib.md5(cctv_url.encode()).hexdigest()[:8]
+            await self.async_set_unique_id(f"daejeon_cctv_{url_hash}")
+            self._abort_if_unique_id_configured()
+
+            return self.async_create_entry(
+                title=cctv_name,
+                data={
+                    CONF_CCTV_URL: cctv_url,
+                    CONF_CCTV_NAME: cctv_name,
+                    CONF_HLS_SEGMENT_DURATION: user_input.get(
+                        CONF_HLS_SEGMENT_DURATION, DEFAULT_HLS_SEGMENT_DURATION
+                    ),
+                    CONF_MAX_SEGMENTS: user_input.get(
+                        CONF_MAX_SEGMENTS, DEFAULT_MAX_SEGMENTS
+                    ),
+                },
+            )
 
         return self.async_show_form(
             step_id="user",
@@ -184,12 +179,6 @@ class DaejeonCCTVOptionsFlow(config_entries.OptionsFlow):
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(
-                        CONF_RTSP_PORT,
-                        default=self.config_entry.data.get(
-                            CONF_RTSP_PORT, DEFAULT_RTSP_PORT
-                        ),
-                    ): cv.port,
                     vol.Optional(
                         CONF_HLS_SEGMENT_DURATION,
                         default=self.config_entry.data.get(
