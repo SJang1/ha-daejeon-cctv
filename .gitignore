@@ -1,0 +1,10 @@
+custom_components/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
