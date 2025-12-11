@@ -733,7 +733,12 @@ class DaejeonCCTVCamera(Camera):
                 pass
     
     async def _download_loop(self) -> None:
-        """Main download loop - fetches videos and manages streams."""
+        """Main download loop - fetches videos in background.
+        
+        Downloads new videos but does NOT switch the HLS stream automatically.
+        The stream will switch to the new video only when the viewer refreshes.
+        This avoids timestamp discontinuity issues.
+        """
         last_url_fetch: float = 0
         current_interval = FETCH_INTERVAL_SUCCESS
         
@@ -759,17 +764,16 @@ class DaejeonCCTVCamera(Camera):
                             _LOGGER.debug("New video URL detected, downloading...")
                             if await self._download_video():
                                 self._last_downloaded_url = new_url
-                                # Switch HLS to new video
-                                latest = self._get_latest_ready_video()
-                                if latest:
-                                    await self._hls_manager.start_or_switch(latest)
-                        else:
-                            # Same URL, just ensure HLS is running
-                            if not self._hls_manager.is_running:
-                                latest = self._get_latest_ready_video()
-                                if latest:
-                                    _LOGGER.debug("HLS not running, starting...")
-                                    await self._hls_manager.start_or_switch(latest)
+                                # DON'T switch HLS here - let it keep looping current video
+                                # New video will be used when stream is requested again
+                                _LOGGER.info("New video ready, will use on next stream request")
+                        
+                        # Ensure HLS is running (but don't switch videos)
+                        if not self._hls_manager.is_running:
+                            latest = self._get_latest_ready_video()
+                            if latest:
+                                _LOGGER.debug("HLS not running, starting...")
+                                await self._hls_manager.start_or_switch(latest)
                     else:
                         current_interval = FETCH_INTERVAL_FAIL
                         _LOGGER.debug("No video found, retry in %ds", current_interval)
