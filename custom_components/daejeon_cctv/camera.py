@@ -625,19 +625,23 @@ class DaejeonCCTVCamera(Camera):
             _LOGGER.debug("Stopped download task for %s", self._attr_name)
     
     def _get_latest_ready_video(self) -> Path | None:
-        """Get the newest ready video file."""
-        if not self._video_dir.exists():
+        """Get the newest ready video file (uses cached info, no blocking I/O)."""
+        if not self._video_ready:
             return None
         
-        videos = sorted(
-            self._video_dir.glob("video_*.mp4"),
-            key=lambda p: p.stat().st_mtime if p.exists() else 0,
+        # Use cached ready times instead of filesystem stat
+        # Sort by ready time (most recent first)
+        sorted_ready = sorted(
+            self._video_ready.items(),
+            key=lambda x: x[1],
+            reverse=True,
         )
         
-        # Find newest that's marked ready
-        for video in reversed(videos):
-            if video.name in self._video_ready:
-                return video
+        for filename, _ in sorted_ready:
+            video_path = self._video_dir / filename
+            # Quick check using cached info - the file should exist if in ready dict
+            if filename in self._video_ready:
+                return video_path
         
         return None
     
@@ -688,7 +692,8 @@ class DaejeonCCTVCamera(Camera):
             return False
         
         try:
-            self._video_dir.mkdir(parents=True, exist_ok=True)
+            # Use asyncio.to_thread for blocking mkdir
+            await asyncio.to_thread(self._video_dir.mkdir, parents=True, exist_ok=True)
             
             async with self._session.get(self._video_url, timeout=30) as response:
                 if response.status != 200:
@@ -706,8 +711,8 @@ class DaejeonCCTVCamera(Camera):
                 self._video_ready[file_path.name] = time.time()
                 _LOGGER.info("Downloaded video: %s", file_path.name)
                 
-                # Clean up old videos
-                self._cleanup_old_videos()
+                # Clean up old videos (run in background to avoid blocking)
+                asyncio.create_task(self._cleanup_old_videos())
                 self._fetch_error = None
                 
                 return True
@@ -717,8 +722,15 @@ class DaejeonCCTVCamera(Camera):
             _LOGGER.error("Download error: %s", err)
             return False
     
-    def _cleanup_old_videos(self) -> None:
-        """Remove old video files."""
+    async def _cleanup_old_videos(self) -> None:
+        """Remove old video files (async to avoid blocking)."""
+        try:
+            await asyncio.to_thread(self._cleanup_old_videos_sync)
+        except Exception as err:
+            _LOGGER.debug("Cleanup error: %s", err)
+    
+    def _cleanup_old_videos_sync(self) -> None:
+        """Remove old video files (sync version for thread)."""
         if not self._video_dir.exists():
             return
         
