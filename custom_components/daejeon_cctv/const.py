@@ -18,7 +18,7 @@ DEFAULT_UPDATE_INTERVAL = 5
 # Timing
 FETCH_INTERVAL_FAIL = 3     # seconds to retry when no video found
 DOWNLOAD_RETRY_DELAY = 3    # seconds to retry when download fails
-IDLE_TIMEOUT = 120          # seconds before stopping inactive stream
+IDLE_TIMEOUT = 180          # seconds before stopping inactive stream (3 minutes)
 
 # Paths
 VIDEO_BASE_DIR = "/tmp/daejeon_cctv"
