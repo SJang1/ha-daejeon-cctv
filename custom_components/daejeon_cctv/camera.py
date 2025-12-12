@@ -113,18 +113,19 @@ class HLSStreamManager:
             if self._current_video == video_path and self.is_running:
                 return True
             
-            # Ensure HLS directory exists
-            self.hls_dir.mkdir(parents=True, exist_ok=True)
+            # Ensure HLS directory exists (non-blocking)
+            await asyncio.to_thread(self.hls_dir.mkdir, parents=True, exist_ok=True)
             
             # Determine if this is a fresh start or a switch
             is_switch = self._current_video is not None and self.is_running
             old_process = self._process if is_switch else None
             
             # For fresh start, clean the directory
-            if not is_switch and self.hls_dir.exists():
+            if not is_switch:
                 try:
-                    await asyncio.to_thread(shutil.rmtree, self.hls_dir)
-                    self.hls_dir.mkdir(parents=True, exist_ok=True)
+                    if await asyncio.to_thread(self.hls_dir.exists):
+                        await asyncio.to_thread(shutil.rmtree, self.hls_dir)
+                        await asyncio.to_thread(self.hls_dir.mkdir, parents=True, exist_ok=True)
                     self._segment_counter = 0
                 except Exception as err:
                     _LOGGER.warning("Failed to clean HLS dir: %s", err)
@@ -215,11 +216,13 @@ class HLSStreamManager:
         if self._ready:
             return True
         
-        if not self.playlist_path.exists():
-            return False
-        
         try:
-            size = self.playlist_path.stat().st_size
+            # Non-blocking file checks
+            exists = await asyncio.to_thread(self.playlist_path.exists)
+            if not exists:
+                return False
+            
+            size = await asyncio.to_thread(lambda: self.playlist_path.stat().st_size)
             if size < 100:
                 return False
             
@@ -251,12 +254,14 @@ class HLSStreamManager:
             except Exception:
                 pass
         
-        if self._current_video and self._current_video.exists():
-            _LOGGER.warning("HLS process died, restarting for camera %s", self._camera_id)
-            # Force a fresh start
-            old_video = self._current_video
-            self._current_video = None
-            return await self.start_or_switch(old_video)
+        if self._current_video:
+            video_exists = await asyncio.to_thread(self._current_video.exists)
+            if video_exists:
+                _LOGGER.warning("HLS process died, restarting for camera %s", self._camera_id)
+                # Force a fresh start
+                old_video = self._current_video
+                self._current_video = None
+                return await self.start_or_switch(old_video)
         
         return False
     
@@ -277,12 +282,13 @@ class HLSStreamManager:
             self._current_video = None
             self._ready = False
             
-            # Clean up HLS directory
-            if self.hls_dir.exists():
-                try:
+            # Clean up HLS directory (non-blocking)
+            try:
+                exists = await asyncio.to_thread(self.hls_dir.exists)
+                if exists:
                     await asyncio.to_thread(shutil.rmtree, self.hls_dir)
-                except Exception as err:
-                    _LOGGER.debug("Failed to remove HLS dir: %s", err)
+            except Exception as err:
+                _LOGGER.debug("Failed to remove HLS dir: %s", err)
 
 
 
@@ -343,9 +349,6 @@ class HLSPlaylistView(HomeAssistantView):
         if not hls_manager.is_ready:
             return web.Response(status=503, text="HLS stream not ready")
         
-        if not hls_manager.playlist_path.exists():
-            return web.Response(status=503, text="Playlist not ready")
-        
         try:
             async with aiofiles.open(hls_manager.playlist_path, "r") as f:
                 content = await f.read()
@@ -361,6 +364,8 @@ class HLSPlaylistView(HomeAssistantView):
             
             return web.Response(text=content, headers=headers)
             
+        except FileNotFoundError:
+            return web.Response(status=503, text="Playlist not ready")
         except Exception as err:
             _LOGGER.error("Error serving playlist: %s", err)
             return web.Response(status=500, text=str(err))
@@ -383,17 +388,28 @@ class HLSSegmentView(HomeAssistantView):
         
         camera.update_access_time()
         
+        if not filename.endswith(".ts"):
+            return web.Response(status=404, text="Invalid segment")
+        
         file_path = camera.hls_manager.hls_dir / filename
         
-        if not file_path.exists() or not filename.endswith(".ts"):
+        try:
+            # Use aiofiles to read segment data
+            async with aiofiles.open(file_path, "rb") as f:
+                data = await f.read()
+            
+            headers = {
+                "Content-Type": "video/mp2t",
+                "Cache-Control": "no-cache",
+            }
+            
+            return web.Response(body=data, headers=headers)
+            
+        except FileNotFoundError:
             return web.Response(status=404, text="Segment not found")
-        
-        headers = {
-            "Content-Type": "video/mp2t",
-            "Cache-Control": "no-cache",
-        }
-        
-        return web.FileResponse(path=file_path, headers=headers)
+        except Exception as err:
+            _LOGGER.debug("Error serving segment %s: %s", filename, err)
+            return web.Response(status=404, text="Segment not found")
 
 
 class DaejeonCCTVCamera(Camera):

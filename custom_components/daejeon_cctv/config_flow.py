@@ -74,8 +74,9 @@ async def validate_cctv_url(url: str) -> tuple[bool, str | None]:
         }
         
         connector = aiohttp.TCPConnector(ssl=_SSL_CONTEXT)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.get(url, headers=headers, timeout=10) as response:
+        timeout = aiohttp.ClientTimeout(total=5)  # Short timeout to avoid blocking
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            async with session.get(url, headers=headers) as response:
                 if response.status != 200:
                     return False, f"HTTP {response.status}"
                 
