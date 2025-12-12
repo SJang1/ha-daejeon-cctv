@@ -27,7 +27,8 @@
         "title": "Configure Daejeon CCTV",
         "data": {
           "hls_segment_duration": "HLS Segment Duration (seconds)",
-          "max_segments": "Max HLS Segments"
+          "max_segments": "Max HLS Segments",
+          "update_interval": "Video Update Interval (seconds)"
         }
       }
     }

@@ -21,9 +21,11 @@ from .const import (
     CONF_CCTV_URL,
     CONF_HLS_SEGMENT_DURATION,
     CONF_MAX_SEGMENTS,
+    CONF_UPDATE_INTERVAL,
     DEFAULT_HLS_SEGMENT_DURATION,
     DEFAULT_MAX_SEGMENTS,
     DEFAULT_NAME,
+    DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
 )
 
@@ -40,10 +42,8 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Optional(CONF_CCTV_NAME): cv.string,
         vol.Optional(
             CONF_HLS_SEGMENT_DURATION, default=DEFAULT_HLS_SEGMENT_DURATION
-        ): vol.All(vol.Coerce(int), vol.Range(min=2, max=10)),
-        vol.Optional(CONF_MAX_SEGMENTS, default=DEFAULT_MAX_SEGMENTS): vol.All(
-            vol.Coerce(int), vol.Range(min=3, max=30)
-        ),
+        ): cv.positive_int,
+        vol.Optional(CONF_MAX_SEGMENTS, default=DEFAULT_MAX_SEGMENTS): cv.positive_int,
     }
 )
 
@@ -159,15 +159,11 @@ class DaejeonCCTVConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: 
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
         """Create the options flow."""
-        return DaejeonCCTVOptionsFlow(config_entry)
+        return DaejeonCCTVOptionsFlow()
 
 
 class DaejeonCCTVOptionsFlow(config_entries.OptionsFlow):
     """Handle options flow for Daejeon CCTV."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -181,17 +177,26 @@ class DaejeonCCTVOptionsFlow(config_entries.OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Optional(
-                        CONF_HLS_SEGMENT_DURATION,
-                        default=self.config_entry.data.get(
-                            CONF_HLS_SEGMENT_DURATION, DEFAULT_HLS_SEGMENT_DURATION
+                        CONF_UPDATE_INTERVAL,
+                        default=self.config_entry.options.get(
+                            CONF_UPDATE_INTERVAL,
+                            self.config_entry.data.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
                         ),
-                    ): vol.All(vol.Coerce(int), vol.Range(min=2, max=10)),
+                    ): cv.positive_int,
+                    vol.Optional(
+                        CONF_HLS_SEGMENT_DURATION,
+                        default=self.config_entry.options.get(
+                            CONF_HLS_SEGMENT_DURATION,
+                            self.config_entry.data.get(CONF_HLS_SEGMENT_DURATION, DEFAULT_HLS_SEGMENT_DURATION)
+                        ),
+                    ): cv.positive_int,
                     vol.Optional(
                         CONF_MAX_SEGMENTS,
-                        default=self.config_entry.data.get(
-                            CONF_MAX_SEGMENTS, DEFAULT_MAX_SEGMENTS
+                        default=self.config_entry.options.get(
+                            CONF_MAX_SEGMENTS,
+                            self.config_entry.data.get(CONF_MAX_SEGMENTS, DEFAULT_MAX_SEGMENTS)
                         ),
-                    ): vol.All(vol.Coerce(int), vol.Range(min=3, max=30)),
+                    ): cv.positive_int,
                 }
             ),
         )

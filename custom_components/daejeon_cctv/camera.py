@@ -28,11 +28,13 @@ from .const import (
     CONF_CCTV_URL,
     CONF_HLS_SEGMENT_DURATION,
     CONF_MAX_SEGMENTS,
+    CONF_UPDATE_INTERVAL,
     DEFAULT_HLS_SEGMENT_DURATION,
     DEFAULT_MAX_SEGMENTS,
+    DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
+    DOWNLOAD_RETRY_DELAY,
     FETCH_INTERVAL_FAIL,
-    FETCH_INTERVAL_SUCCESS,
     IDLE_TIMEOUT,
     VIDEO_BASE_DIR,
 )
@@ -301,13 +303,24 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Daejeon CCTV camera platform."""
     data = config_entry.data
+    options = config_entry.options
     
     camera = DaejeonCCTVCamera(
         hass=hass,
         cctv_url=data[CONF_CCTV_URL],
         cctv_name=data[CONF_CCTV_NAME],
-        segment_duration=data.get(CONF_HLS_SEGMENT_DURATION, DEFAULT_HLS_SEGMENT_DURATION),
-        max_segments=data.get(CONF_MAX_SEGMENTS, DEFAULT_MAX_SEGMENTS),
+        segment_duration=options.get(
+            CONF_HLS_SEGMENT_DURATION,
+            data.get(CONF_HLS_SEGMENT_DURATION, DEFAULT_HLS_SEGMENT_DURATION)
+        ),
+        max_segments=options.get(
+            CONF_MAX_SEGMENTS,
+            data.get(CONF_MAX_SEGMENTS, DEFAULT_MAX_SEGMENTS)
+        ),
+        update_interval=options.get(
+            CONF_UPDATE_INTERVAL,
+            data.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+        ),
     )
     
     # Register camera globally
@@ -424,6 +437,7 @@ class DaejeonCCTVCamera(Camera):
         cctv_name: str,
         segment_duration: int = DEFAULT_HLS_SEGMENT_DURATION,
         max_segments: int = DEFAULT_MAX_SEGMENTS,
+        update_interval: int = DEFAULT_UPDATE_INTERVAL,
     ) -> None:
         """Initialize the camera."""
         super().__init__()
@@ -436,6 +450,7 @@ class DaejeonCCTVCamera(Camera):
         self._attr_brand = "Daejeon City"
         self._attr_model = "UTIC CCTV"
         self._attr_is_on = True
+        self._update_interval = update_interval
         
         # Video management
         self._video_dir = Path(VIDEO_BASE_DIR) / self._camera_id
@@ -795,7 +810,7 @@ class DaejeonCCTVCamera(Camera):
         This avoids timestamp discontinuity issues.
         """
         last_url_fetch: float = 0
-        current_interval = FETCH_INTERVAL_SUCCESS
+        current_interval = self._update_interval
         
         try:
             while True:
@@ -812,16 +827,28 @@ class DaejeonCCTVCamera(Camera):
                     
                     if new_url:
                         self._video_url = new_url
-                        current_interval = FETCH_INTERVAL_SUCCESS
+                        current_interval = self._update_interval
                         
                         # Only download if URL changed (new video segment from source)
                         if new_url != self._last_downloaded_url:
                             _LOGGER.debug("New video URL detected, downloading...")
-                            if await self._download_video():
-                                self._last_downloaded_url = new_url
-                                # DON'T switch HLS here - let it keep looping current video
-                                # New video will be used when stream is requested again
-                                _LOGGER.info("New video ready, will use on next stream request")
+                            # Retry download up to 3 times
+                            download_success = False
+                            for attempt in range(3):
+                                if await self._download_video():
+                                    download_success = True
+                                    self._last_downloaded_url = new_url
+                                    _LOGGER.info("New video ready, will use on next stream request")
+                                    break
+                                else:
+                                    _LOGGER.warning(
+                                        "Download failed (attempt %d/3), retrying in %ds",
+                                        attempt + 1, DOWNLOAD_RETRY_DELAY
+                                    )
+                                    await asyncio.sleep(DOWNLOAD_RETRY_DELAY)
+                            
+                            if not download_success:
+                                _LOGGER.error("Download failed after 3 attempts")
                         
                         # Ensure HLS is running (but don't switch videos)
                         if not self._hls_manager.is_running:

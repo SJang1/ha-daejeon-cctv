@@ -27,7 +27,8 @@
         "title": "대전 CCTV 설정",
         "data": {
           "hls_segment_duration": "HLS 세그먼트 길이 (초)",
-          "max_segments": "최대 HLS 세그먼트 수"
+          "max_segments": "최대 HLS 세그먼트 수",
+          "update_interval": "영상 업데이트 간격 (초)"
         }
       }
     }
